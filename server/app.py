@@ -864,9 +864,11 @@ def predict_lite():
     pred = classes[idx]
     order = np.argsort(proba)[::-1]
     top3 = [{"label": classes[i], "prob": float(proba[i])} for i in order[:3]]
+    foods = get_food_suggestions(str(pred))
     return jsonify({
         "predicted_accent": str(pred),
         "top3": top3,
+        "suggested_foods": foods,
         "duration_sec": duration,
         "rms_energy": rms,
         "feature_dim": int(feat.shape[1]),
@@ -916,9 +918,11 @@ def predict_ultra():
     order = np.argsort(probs)[::-1]
     top3 = [{"label": classes[i], "prob": float(probs[i])} for i in order[:3]]
     pred = classes[order[0]]
+    foods = get_food_suggestions(str(pred))
     return jsonify({
         "predicted_accent": str(pred),
         "top3": top3,
+        "suggested_foods": foods,
         "duration_sec": duration_sec,
         "stage": "inference",
         "ultra_mode": 1
