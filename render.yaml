@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: accent-atlas
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers=2 server.app:app
+    envVars:
+      - key: MFCC_MODEL_PATH
+        value: results/presentation_imbalance/mfcc_prosody_model.joblib
+    healthCheckPath: /health
+    autoDeploy: true

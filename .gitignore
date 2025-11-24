@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+.env.*
+!.env.example
+
+# Data / Large artifacts (avoid committing raw datasets)
+/data/
+/datasets/
+IndicAccentDB/
+uploads/
+*.npz
+*.npy
+*.pt
+*.ckpt
+*.tar
+*.zip
+
+# Results logs (keep model checkpoints only if needed)
+results/debug_features/
+results/*
+!results/presentation_imbalance/
+!results/presentation_imbalance/mfcc_prosody_model.joblib
+
+# OS / Editor
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Coverage / Test outputs
+.coverage
+coverage/
+htmlcov/
+
+# Node / Frontend (if added later)
+node_modules/
+dist/
+build/
+
+# Misc caches
+.cache/
+.tmp/
+*.log
+*.pid
+*.wav
+*.joblib
+!results/presentation_imbalance/mfcc_prosody_model.joblib
+*.ipynb
