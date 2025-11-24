@@ -256,7 +256,7 @@ gunicorn --bind 0.0.0.0:8000 --workers 2 server.app:app
 ```
 
 ### Memory-Constrained Hosting (Render / Free Tiers)
-If you see worker SIGKILL / OOM events (500 errors with `Worker was sent SIGKILL` in logs), enable lightweight settings via environment variables to reduce peak RAM:
+If you see worker SIGKILL / OOM events or HTML 500 pages instead of JSON, enable lightweight settings via environment variables to reduce peak RAM and CPU.
 
 ```bash
 LIGHT_MODE=1          # Skips expensive silence splitting and TTA augmentations
@@ -275,7 +275,16 @@ YIN_ENABLED=0
 TTA_ENABLED=0
 DEBUG_FEATURE_LOG=0
 MAX_INFERENCE_SEC=6.0
+SAFE_FEATURES=1        # Use MFCC-only + zero pad instead of full prosody stats
+ULTRA_MODE=1           # (Temporary) Route /predict to ultra-minimal path for deploy validation
 ```
+
+After stability is confirmed (predictions returning JSON quickly), you can disable `ULTRA_MODE` (set to 0) to restore normal predictions, and optionally set `SAFE_FEATURES=0` if you want full prosody features.
+
+Deployment verification checklist:
+1. Hit `/health` – ensure `build_commit` matches latest Git commit hash.
+2. Hit `/debug` – confirm `SAFE_FEATURES` and `ULTRA_MODE` appear under `derived`.
+3. Upload a short (~2–3s) clip – should return JSON (no HTML error). If still HTML, redeploy or reconnect repo.
 
 You can re-enable pieces incrementally if stability is confirmed.
 
