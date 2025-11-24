@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Accent Detector</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root{
+      --bg: #0b1020; --surface:#0e1424; --card:#0f172a; --muted:#94a3b8; --text:#e2e8f0; --primary:#2563eb;
+      --ring:#60a5fa; --chip:#111827; --chip-text:#d1d5db; --ok:#10b981; --warn:#f59e0b; --border: rgba(148,163,184,.18);
+      --shadow: 0 10px 30px rgba(0,0,0,.25);
+      --skeleton: linear-gradient(90deg, rgba(148,163,184,.08), rgba(148,163,184,.18), rgba(148,163,184,.08));
+    }
+    :root[data-theme="light"]{
+      --bg:#f8fafc; --surface:#ffffff; --card:#ffffff; --muted:#475569; --text:#0f172a; --primary:#2563eb;
+      --ring:#3b82f6; --chip:#f1f5f9; --chip-text:#0f172a; --ok:#059669; --warn:#d97706; --border: rgba(15,23,42,.12);
+      --shadow: 0 10px 20px rgba(2,6,23,.08);
+    }
+    *{ box-sizing: border-box; }
+    body{ margin:0; min-height:100vh; font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg); color: var(--text); display:flex; align-items:center; justify-content:center; padding: 28px 16px;
+    }
+    .container{ width:100%; max-width: 980px; }
+    .header{ display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:16px; }
+    .brand{ display:flex; align-items:center; gap:12px; }
+    .logo{ width:36px; height:36px; border-radius:8px; background: var(--primary); box-shadow: var(--shadow); position: relative; overflow: hidden; }
+    .logo::after{ content:""; position:absolute; inset:0; background: radial-gradient(120px 80px at -20% -20%, rgba(255,255,255,.16), transparent); }
+    .title{ font-size: 1.25rem; font-weight: 700; letter-spacing: .2px; }
+    .muted{ color: var(--muted); }
+
+    .grid{ display:grid; grid-template-columns: 1fr; gap:16px; }
+    @media (min-width: 900px){ .grid{ grid-template-columns: 1.1fr .9fr; } }
+    .card{ background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 18px; box-shadow: var(--shadow); }
+    .section-title{ font-weight: 600; margin: 0 0 12px; font-size: 1rem; }
+
+    .dropzone{ border:1px dashed var(--border); border-radius:10px; padding:16px; text-align:center; cursor:pointer; background: var(--surface); }
+    .dropzone:hover{ border-color: var(--ring); }
+    .row{ display:flex; gap:12px; flex-wrap: wrap; align-items:center; }
+    .btn{ background: var(--surface); color: var(--text); border:1px solid var(--border); padding:.6rem .85rem; border-radius:8px; cursor:pointer; font-weight:500; transition: background .15s ease, color .15s ease, border-color .15s ease; }
+    .btn:hover{ background: var(--card); }
+    .btn:disabled{ opacity:.55; cursor:not-allowed; }
+    .primary{ background: var(--primary); color:#fff; border-color: transparent; }
+    .primary:hover{ filter: brightness(1.05); }
+    .toggle{ background: transparent; border:1px solid var(--border); border-radius:999px; padding:.4rem .6rem; color: var(--muted); display:flex; align-items:center; gap:.5rem; }
+    .status{ font-size:.9rem; color: var(--muted); }
+    .audio{ width:100%; margin-top:8px; }
+
+    .result{ display:flex; flex-direction: column; gap:12px; min-height: 160px; }
+    .accent-pill{ display:inline-flex; align-items:center; gap:8px; background:var(--surface); border:1px solid var(--border); padding:8px 12px; border-radius:999px; width:fit-content; }
+    .foods{ display:flex; gap:8px; flex-wrap:wrap; }
+    .chip{ background: var(--chip); color: var(--chip-text); padding:6px 10px; border-radius:999px; border:1px solid var(--border); font-size:.9rem; }
+    .top3{ display:flex; flex-direction:column; gap:10px; }
+    .bar{ height:8px; background:var(--surface); border-radius:8px; border:1px solid var(--border); overflow:hidden; }
+    .bar > span{ display:block; height:100%; background: linear-gradient(90deg, var(--ok), #22d3ee); }
+
+    .skeleton{ position:relative; border-radius:8px; background: rgba(148,163,184,.08); overflow:hidden; }
+    .skeleton::after{ content:""; position:absolute; inset:0; background: var(--skeleton); background-size: 200% 100%; animation: shimmer 1.2s infinite; }
+    @keyframes shimmer { 0%{ background-position: 200% 0; } 100%{ background-position: -200% 0; } }
+
+    .toast-wrap{ position: fixed; top: 16px; right: 16px; display:flex; flex-direction:column; gap:8px; z-index: 50; }
+    .toast{ background: var(--surface); color: var(--text); border:1px solid var(--border); border-radius:10px; padding:10px 12px; box-shadow: var(--shadow); min-width: 240px; }
+
+    #wave{ width:100%; height:60px; background: var(--surface); border:1px solid var(--border); border-radius:10px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="brand">
+        <div class="logo"></div>
+        <div>
+          <div class="title">Accent Detector</div>
+          <div class="muted">Upload or record. Get your accent and local food tips.</div>
+        </div>
+      </div>
+      <button id="themeBtn" class="toggle" title="Toggle theme" aria-label="Toggle theme">
+        <span id="themeIcon">🌙</span><span class="muted">Theme</span>
+      </button>
+    </div>
+
+    <div class="grid">
+      <!-- Left: Actions -->
+      <div class="card">
+        <h3 class="section-title">Analyze an audio file</h3>
+        <label class="dropzone" id="drop">
+          <input type="file" id="file" accept="audio/*" style="display:none" />
+          <div>Drag & drop audio here or <u>choose a file</u></div>
+        </label>
+        <div class="row" style="margin-top:12px">
+          <button class="btn" id="chooseBtn">Choose File</button>
+          <button class="btn primary" id="send">Analyze</button>
+          <span class="status" id="fileName">No file selected</span>
+        </div>
+        <hr style="border-color: var(--border); margin: 14px 0;" />
+        <h3 class="section-title">Or record live</h3>
+        <div class="row">
+          <button class="btn" id="recordBtn">Start Recording</button>
+          <button class="btn" id="stopBtn" disabled>Stop</button>
+          <button class="btn primary" id="uploadRecBtn" disabled>Upload Recording</button>
+          <span class="status" id="status">Idle</span>
+        </div>
+        <canvas id="wave"></canvas>
+        <audio id="player" class="audio" controls></audio>
+      </div>
+
+      <!-- Right: Results -->
+      <div class="card">
+        <h3 class="section-title">Result</h3>
+        <div class="result">
+          <div class="accent-pill" id="accentPill" style="display:none">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 3C7.03 3 3 7.03 3 12C3 16.97 7.03 21 12 21C16.97 21 21 16.97 21 12C21 7.03 16.97 3 12 3ZM10.2 16.2L6.5 12.5L7.91 11.09L10.2 13.38L16.09 7.5L17.5 8.91L10.2 16.2Z" fill="#10b981"/></svg>
+            <span id="accentText">—</span>
+          </div>
+          <div>
+            <div class="muted" style="margin-bottom:6px">Top 3</div>
+            <div class="top3" id="top3"></div>
+            <div id="top3Skeleton" style="display:none">
+              <div class="skeleton" style="height:26px; margin:6px 0; border-radius:6px"></div>
+              <div class="skeleton" style="height:26px; margin:6px 0; border-radius:6px"></div>
+              <div class="skeleton" style="height:26px; margin:6px 0; border-radius:6px"></div>
+            </div>
+          </div>
+          <div>
+            <div class="muted" style="margin-bottom:6px">Suggested foods</div>
+            <div class="foods" id="foods"></div>
+          </div>
+          <div id="statusMsg" class="muted" style="min-height:18px"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast-wrap" id="toasts" aria-live="polite" aria-atomic="true"></div>
+
+  <script>
+    // Theme toggle with persistence
+    const themeBtn = document.getElementById('themeBtn');
+    const themeIcon = document.getElementById('themeIcon');
+    const root = document.documentElement;
+    const preferred = localStorage.getItem('theme');
+    if (preferred) root.setAttribute('data-theme', preferred);
+    themeIcon.textContent = root.getAttribute('data-theme') === 'light' ? '🌞' : '🌙';
+    themeBtn.onclick = () => {
+      const curr = root.getAttribute('data-theme');
+      const next = curr === 'light' ? '' : 'light';
+      if (next) root.setAttribute('data-theme', next); else root.removeAttribute('data-theme');
+      localStorage.setItem('theme', next);
+      themeIcon.textContent = next === 'light' ? '🌞' : '🌙';
+    };
+
+  // Cache DOM references once (avoid redeclaration errors on hot reload)
+  var sendBtn = window.sendBtn || (window.sendBtn = document.getElementById('send'));
+  var fileInput = window.fileInput || (window.fileInput = document.getElementById('file'));
+  var chooseBtn = window.chooseBtn || (window.chooseBtn = document.getElementById('chooseBtn'));
+  var fileName = window.fileNameEl || (window.fileNameEl = document.getElementById('fileName'));
+  var recordBtn = window.recordBtn || (window.recordBtn = document.getElementById('recordBtn'));
+  var stopBtn = window.stopBtn || (window.stopBtn = document.getElementById('stopBtn'));
+  var uploadRecBtn = window.uploadRecBtn || (window.uploadRecBtn = document.getElementById('uploadRecBtn'));
+  var player = window.playerEl || (window.playerEl = document.getElementById('player'));
+  var statusEl = window.statusEl || (window.statusEl = document.getElementById('status'));
+  var drop = window.dropZone || (window.dropZone = document.getElementById('drop'));
+  var accentPill = window.accentPill || (window.accentPill = document.getElementById('accentPill'));
+  var accentText = window.accentText || (window.accentText = document.getElementById('accentText'));
+  var top3El = window.top3El || (window.top3El = document.getElementById('top3'));
+  var foodsEl = window.foodsEl || (window.foodsEl = document.getElementById('foods'));
+  var top3Skeleton = window.top3Skeleton || (window.top3Skeleton = document.getElementById('top3Skeleton'));
+  var toastWrap = window.toastWrap || (window.toastWrap = document.getElementById('toasts'));
+  var waveCanvas = window.waveCanvas || (window.waveCanvas = document.getElementById('wave'));
+  var wctx = window.waveCtx || (window.waveCtx = waveCanvas.getContext('2d'));
+  var statusMsg = window.statusMsg || (window.statusMsg = document.getElementById('statusMsg'));
+
+    function renderTop3(list){
+      top3El.innerHTML='';
+      if (!list || !Array.isArray(list)) return;
+      list.forEach(item=>{
+        const wrap = document.createElement('div');
+        const label = document.createElement('div');
+        label.textContent = `${item.label} — ${(item.prob*100).toFixed(1)}%`;
+        label.style.marginBottom='6px';
+        const bar = document.createElement('div');
+        bar.className='bar';
+        const fill = document.createElement('span');
+        fill.style.width = Math.max(3, Math.round(item.prob*100))+'%';
+        bar.appendChild(fill);
+        wrap.appendChild(label);
+        wrap.appendChild(bar);
+        top3El.appendChild(wrap);
+      });
+    }
+
+    function renderFoods(arr){
+      foodsEl.innerHTML='';
+      if (!arr || !Array.isArray(arr)) return;
+      arr.forEach(f=>{
+        const chip = document.createElement('span');
+        chip.className='chip'; chip.textContent=f;
+        foodsEl.appendChild(chip);
+      });
+    }
+
+    function toast(msg, timeout=2500){
+      const el = document.createElement('div');
+      el.className = 'toast';
+      el.textContent = msg;
+      toastWrap.appendChild(el);
+      setTimeout(()=>{ el.style.opacity='0'; el.style.transform='translateY(-4px)'; }, timeout - 300);
+      setTimeout(()=>{ if (el.parentNode) toastWrap.removeChild(el); }, timeout);
+    }
+
+    function showLoading(){ top3Skeleton.style.display='block'; top3El.innerHTML=''; foodsEl.innerHTML=''; accentPill.style.display='none'; }
+    function hideLoading(){ top3Skeleton.style.display='none'; }
+
+    function renderResult(json){
+      statusMsg.textContent = '';
+      if (json && json.predicted_accent){
+        accentText.textContent = json.predicted_accent;
+        accentPill.style.display='inline-flex';
+      }
+      renderTop3(json.top3);
+      renderFoods(json.suggested_foods);
+    }
+
+    // Choose file helpers
+    chooseBtn.onclick = ()=> fileInput.click();
+    fileInput.onchange = ()=> fileName.textContent = fileInput.files[0]?.name || 'No file selected';
+    drop.addEventListener('click', ()=> fileInput.click());
+    drop.addEventListener('dragover', (e)=>{ e.preventDefault(); drop.style.borderColor='var(--ring)'; });
+    drop.addEventListener('dragleave', ()=>{ drop.style.borderColor='var(--border)'; });
+    drop.addEventListener('drop', (e)=>{
+      e.preventDefault();
+      if (e.dataTransfer.files?.length){
+        fileInput.files = e.dataTransfer.files;
+        fileName.textContent = fileInput.files[0].name;
+      }
+      drop.style.borderColor='var(--border)';
+    });
+
+    // File upload
+    sendBtn.onclick = async () => {
+      const f = fileInput.files[0];
+      if (!f) { statusMsg.textContent = 'Please choose a file.'; toast('Please choose a file.'); return; }
+      const fd = new FormData();
+      fd.append('file', f, f.name || 'audio.wav');
+      statusMsg.textContent = 'Uploading...'; showLoading();
+      sendBtn.disabled = true; chooseBtn.disabled = true;
+      try {
+        const res = await fetch('/predict', { method: 'POST', body: fd });
+        if (!res.ok) { const txt = await res.text(); throw new Error(`HTTP ${res.status} ${res.statusText}: ${txt}`); }
+        const j = await res.json();
+        hideLoading(); renderResult(j); toast('Prediction ready ✅');
+      } catch (e) {
+        hideLoading(); statusMsg.textContent = 'Upload failed.'; toast('Upload failed.');
+      }
+      sendBtn.disabled = false; chooseBtn.disabled = false;
+    };
+
+    // Live recording
+  var audioCtx = window.audioCtx || null;
+  var mediaStream = window.mediaStream || null;
+  var sourceNode = window.sourceNode || null;
+  var processorNode = window.processorNode || null;
+  var analyser = window.analyser || null;
+  var dataArray = window.dataArray || null;
+  var recording = window.recordingFlag || false;
+  var recBuffers = window.recBuffers || [];
+  var recLength = window.recLength || 0;
+  var recSampleRate = window.recSampleRate || 44100;
+
+    function initAudioNodes(stream){
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
+      recSampleRate = audioCtx.sampleRate;
+      mediaStream = stream;
+      sourceNode = audioCtx.createMediaStreamSource(stream);
+      analyser = audioCtx.createAnalyser(); analyser.fftSize = 1024; dataArray = new Uint8Array(analyser.frequencyBinCount);
+      const bufferSize = 4096; processorNode = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+      processorNode.onaudioprocess = (e) => {
+        if (!recording) return; const input = e.inputBuffer.getChannelData(0);
+        recBuffers.push(new Float32Array(input)); recLength += input.length;
+      };
+      sourceNode.connect(analyser); analyser.connect(processorNode); processorNode.connect(audioCtx.destination);
+      drawWave();
+    }
+
+    async function startRecording(){
+      if (recording) return;
+      try{
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        initAudioNodes(stream);
+        recBuffers = []; recLength = 0; recording = true;
+        recordBtn.disabled = true; stopBtn.disabled = false; uploadRecBtn.disabled = true;
+        statusEl.textContent = 'Recording...'; toast('Recording started');
+      }catch(e){ statusEl.textContent = 'Mic access denied'; toast('Microphone access denied'); }
+    }
+
+    function stopRecording(){
+      if (!recording) return; recording = false;
+      stopBtn.disabled = true; recordBtn.disabled = false; uploadRecBtn.disabled = false;
+      statusEl.textContent = 'Encoding WAV...';
+      const merged = new Float32Array(recLength); let offset = 0; for (const b of recBuffers){ merged.set(b, offset); offset += b.length; }
+      function floatTo16BitPCM(float32){ const out = new DataView(new ArrayBuffer(float32.length * 2)); let o = 0; for (let i=0;i<float32.length;i++,o+=2){ let s = Math.max(-1, Math.min(1, float32[i])); s = s < 0 ? s * 0x8000 : s * 0x7FFF; out.setInt16(o, s, true);} return out; }
+      function encodeWAV(samples, sampleRate){ const bytesPerSample = 2, blockAlign = bytesPerSample; const buffer = new ArrayBuffer(44 + samples.length * bytesPerSample); const view = new DataView(buffer); const writeString=(v,o,s)=>{ for(let i=0;i<s.length;i++) v.setUint8(o+i, s.charCodeAt(i)); };
+        let o=0; writeString(view,o,'RIFF'); o+=4; view.setUint32(o, 36 + samples.length * bytesPerSample, true); o+=4; writeString(view,o,'WAVE'); o+=4; writeString(view,o,'fmt '); o+=4; view.setUint32(o,16,true); o+=4; view.setUint16(o,1,true); o+=2; view.setUint16(o,1,true); o+=2; view.setUint32(o,sampleRate,true); o+=4; view.setUint32(o,sampleRate*blockAlign,true); o+=4; view.setUint16(o,blockAlign,true); o+=2; view.setUint16(o,bytesPerSample*8,true); o+=2; writeString(view,o,'data'); o+=4; view.setUint32(o, samples.length * bytesPerSample, true); o+=4; const pcm=floatTo16BitPCM(merged); for(let i=0;i<pcm.byteLength;i++){ view.setUint8(44+i, pcm.getUint8(i)); } return new Blob([view], { type: 'audio/wav' }); }
+      const wavBlob = encodeWAV(merged, recSampleRate); const url = URL.createObjectURL(wavBlob); player.src = url; statusEl.textContent = 'Ready to upload.'; toast('Recording ready to upload');
+      uploadRecBtn.onclick = async ()=>{
+        const fd = new FormData(); fd.append('file', wavBlob, 'recording.wav'); statusMsg.textContent = 'Uploading recording...'; showLoading(); uploadRecBtn.disabled = true;
+        try{ const res = await fetch('/predict', { method: 'POST', body: fd }); if (!res.ok){ const txt = await res.text(); throw new Error(`HTTP ${res.status} ${res.statusText}: ${txt}`); } const j = await res.json(); hideLoading(); renderResult(j); toast('Prediction ready ✅'); }
+        catch(e){ hideLoading(); statusMsg.textContent = 'Upload failed.'; toast('Upload failed.'); }
+        uploadRecBtn.disabled = false;
+      };
+      if (mediaStream) mediaStream.getTracks().forEach(t=>t.stop()); if (processorNode) processorNode.disconnect(); if (sourceNode) sourceNode.disconnect(); if (audioCtx && audioCtx.state !== 'closed') audioCtx.close();
+    }
+
+    function drawWave(){ if (!wctx) return; const dpr = window.devicePixelRatio || 1; function loop(){ if (!analyser) return; const { width } = waveCanvas.getBoundingClientRect(); const height = 60; waveCanvas.width = Math.floor(width * dpr); waveCanvas.height = Math.floor(height * dpr); wctx.setTransform(dpr,0,0,dpr,0,0); wctx.clearRect(0,0,width,height); if (!dataArray) return; analyser.getByteTimeDomainData(dataArray); wctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--surface'); wctx.fillRect(0,0,width,height); wctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--ring'); wctx.lineWidth = 2; wctx.beginPath(); const slice = width / dataArray.length; for (let i=0;i<dataArray.length;i++){ const v=(dataArray[i]/128)-1; const x=i*slice; const y=height/2 + v*(height/2 - 4); if (i===0) wctx.moveTo(x,y); else wctx.lineTo(x,y);} wctx.stroke(); requestAnimationFrame(loop); } requestAnimationFrame(loop); }
+
+    recordBtn.onclick = startRecording; stopBtn.onclick = stopRecording;
+    // ---- Microphone Permission Diagnostics ----
+    async function checkMicPermission(){
+      try {
+        if (!navigator.permissions) return; // Not supported (Safari legacy)
+        const status = await navigator.permissions.query({ name: 'microphone' });
+        statusMsg.textContent = `Mic permission: ${status.state}`;
+        status.onchange = () => { statusMsg.textContent = `Mic permission: ${status.state}`; };
+        if (status.state === 'denied') {
+          toast('Microphone blocked. Change in browser site settings.');
+        } else if (status.state === 'prompt') {
+          toast('Click Start Recording to request permission.');
+        }
+      } catch(e){ /* ignore */ }
+    }
+    checkMicPermission();
+
+    async function listAudioDevices(){
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const audioIns = devices.filter(d => d.kind === 'audioinput');
+        if (audioIns.length === 0) return;
+        console.log('Audio input devices:', audioIns.map(d=>`${d.label || 'Unnamed'} (${d.deviceId})`));
+      } catch(e){ /* ignore */ }
+    }
+    listAudioDevices();
+
+    // Replace startRecording to give clearer guidance
+    async function startRecording(){
+      if (recording) return;
+      statusEl.textContent = 'Requesting microphone…';
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: { noiseSuppression: true, echoCancellation: true }, video: false });
+        initAudioNodes(stream);
+        recBuffers = []; recLength = 0; recording = true;
+        recordBtn.disabled = true; stopBtn.disabled = false; uploadRecBtn.disabled = true;
+        statusEl.textContent = 'Recording…'; toast('Recording started');
+      } catch(e){
+        console.error('getUserMedia error', e);
+        let msg='Mic access denied';
+        if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+          msg = 'Mic requires HTTPS (or localhost). Use https://.';
+        }
+        statusEl.textContent = msg;
+        toast(msg);
+      }
+    }
+  </script>
+</body>
+</html>

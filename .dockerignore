@@ -1,0 +1,38 @@
+# Ignore development artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.swp
+
+# Virtual envs
+.venv/
+
+# VCS
+.git/
+.gitignore
+
+# OS / Editor files
+.DS_Store
+.vscode/
+.idea/
+
+# Notebooks & large caches (keep model results directory for weights)
+*.ipynb
+embeddings_cache/
+uploads/
+
+# Logs / debug artifacts
+results/debug_features/
+
+# Node / frontend build artifacts (if added later)
+node_modules/
+dist/
+build/
+
+# Coverage / test outputs
+.coverage
+htmlcov/
+coverage/
+
+# Docker itself
+Dockerfile.old
