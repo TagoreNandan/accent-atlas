@@ -1,0 +1,3 @@
+# Redeploy trigger file
+# Created: 2025-11-24T17:25Z
+# Purpose: Force Render to pull latest commit with light-mode memory settings and diagnostics endpoints.

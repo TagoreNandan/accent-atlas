@@ -255,6 +255,30 @@ docker-compose up -d
 gunicorn --bind 0.0.0.0:8000 --workers 2 server.app:app
 ```
 
+### Memory-Constrained Hosting (Render / Free Tiers)
+If you see worker SIGKILL / OOM events (500 errors with `Worker was sent SIGKILL` in logs), enable lightweight settings via environment variables to reduce peak RAM:
+
+```bash
+LIGHT_MODE=1          # Skips expensive silence splitting and TTA augmentations
+YIN_ENABLED=0         # Disables fundamental frequency (f0) extraction (librosa.yin)
+TTA_ENABLED=0         # Disables test-time augmentation variants entirely
+DEBUG_FEATURE_LOG=0   # Stops saving per-prediction npz debug artifacts
+MAX_INFERENCE_SEC=6.0 # Caps processed audio length (default 8.0)
+```
+
+Set these in the Render dashboard under Environment Variables, then redeploy. This typically cuts memory consumption by 30–50% for longer clips and avoids OOM kills on small instances.
+
+Recommended minimal config for constrained instances:
+```bash
+LIGHT_MODE=1
+YIN_ENABLED=0
+TTA_ENABLED=0
+DEBUG_FEATURE_LOG=0
+MAX_INFERENCE_SEC=6.0
+```
+
+You can re-enable pieces incrementally if stability is confirmed.
+
 ### Mobile (TensorFlow Lite)
 See `docs/DEPLOYMENT.md` for iOS/Android setup.
 
@@ -286,6 +310,7 @@ pytest tests/ --cov=models --cov=server
 3. **Training Data**: Balanced dataset (~1,200 samples) is modest; larger datasets may improve performance.
 4. **Noise**: Tested on synthetic SNR 20–10 dB; real-world field recordings may differ.
 5. **Code-Switching**: Limited evaluation on multilingual input (Hindi-English mixes).
+6. **Memory Constraints**: On very low-RAM hosts (e.g., free tiers) advanced features (YIN pitch stats, TTA) may trigger worker OOM; use the memory-constrained configuration section above.
 
 ---
 

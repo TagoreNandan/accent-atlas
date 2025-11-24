@@ -7,5 +7,16 @@ services:
     envVars:
       - key: MFCC_MODEL_PATH
         value: results/presentation_imbalance/mfcc_prosody_model.joblib
+      # Memory-constrained deployment safeguards
+      - key: LIGHT_MODE
+        value: "1"
+      - key: YIN_ENABLED
+        value: "0"
+      - key: TTA_ENABLED
+        value: "0"
+      - key: DEBUG_FEATURE_LOG
+        value: "0"
+      - key: MAX_INFERENCE_SEC
+        value: "6.0"
     healthCheckPath: /health
     autoDeploy: true
