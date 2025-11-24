@@ -10,6 +10,7 @@ import numpy as np
 import librosa
 import scipy.signal as sig
 from flask import Flask, request, jsonify, render_template, g
+from werkzeug.exceptions import HTTPException
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from pythonjsonlogger import jsonlogger
@@ -100,6 +101,16 @@ def _after_request(resp):
         'duration_ms': round(duration, 2)
     })
     return resp
+
+
+@app.errorhandler(Exception)
+def _handle_unhandled_exception(e):
+    """Return JSON for any uncaught exception so frontend gets a structured error."""
+    # Preserve HTTPExceptions' status/code
+    if isinstance(e, HTTPException):
+        return jsonify({"error": e.name or "http_error", "detail": getattr(e, 'description', str(e))}), e.code
+    app.logger.exception("Unhandled exception")
+    return jsonify({"error": "internal_server_error", "detail": str(e)}), 500
 
 
 # -------- Audio + Features ---------
