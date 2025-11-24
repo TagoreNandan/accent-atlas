@@ -242,8 +242,18 @@
     sendBtn.onclick = async () => {
       const f = fileInput.files[0];
       if (!f) { statusMsg.textContent = 'Please choose a file.'; toast('Please choose a file.'); return; }
+      // Prepare upload blob (convert compressed formats to WAV client-side)
+      let uploadBlob = f;
+      const type = (f.type || '').toLowerCase();
+      const name = (f.name || '').toLowerCase();
+      if (type.includes('webm') || type.includes('ogg') || type.includes('opus') || name.endsWith('.webm') || name.endsWith('.ogg')){
+        try{
+          statusMsg.textContent = 'Converting to WAV...';
+          uploadBlob = await blobToWav(f, 16000);
+        } catch(err){ console.error('Conversion error', err); statusMsg.textContent = 'Conversion failed'; toast('Conversion failed'); sendBtn.disabled = false; chooseBtn.disabled = false; return; }
+      }
       const fd = new FormData();
-      fd.append('file', f, f.name || 'audio.wav');
+      fd.append('file', uploadBlob, f.name || 'audio.wav');
       statusMsg.textContent = 'Uploading...'; showLoading();
       sendBtn.disabled = true; chooseBtn.disabled = true;
       try {
@@ -348,6 +358,47 @@
       } catch(e){ /* ignore */ }
     }
     checkMicPermission();
+
+    // Convert arbitrary audio Blob (webm/ogg/opus) to 16kHz mono WAV Blob
+    async function blobToWav(blob, targetSampleRate=16000){
+      const ab = await blob.arrayBuffer();
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const audioBuf = await ctx.decodeAudioData(ab);
+      const src = audioBuf.getChannelData(0);
+      const srcRate = audioBuf.sampleRate;
+      // Resample to targetSampleRate
+      const ratio = srcRate / targetSampleRate;
+      const outLen = Math.floor(src.length / ratio);
+      const resampled = new Float32Array(outLen);
+      for (let i=0; i<outLen; i++){
+        const idx = i * ratio;
+        const i0 = Math.floor(idx);
+        const i1 = Math.min(i0+1, src.length-1);
+        const frac = idx - i0;
+        resampled[i] = src[i0] * (1-frac) + src[i1] * frac;
+      }
+      // Encode WAV (16-bit PCM)
+      const channels = 1;
+      const bytesPerSample = 2;
+      const blockAlign = channels * bytesPerSample;
+      const buffer = new ArrayBuffer(44 + resampled.length * bytesPerSample);
+      const view = new DataView(buffer);
+      let p = 0;
+      function writeStr(s){ for (let i=0;i<s.length;i++) view.setUint8(p++, s.charCodeAt(i)); }
+      function write32(v){ view.setUint32(p, v, true); p+=4; }
+      function write16(v){ view.setUint16(p, v, true); p+=2; }
+      writeStr('RIFF'); write32(36 + resampled.length * bytesPerSample); writeStr('WAVE');
+      writeStr('fmt '); write32(16); write16(1); write16(channels); write32(targetSampleRate);
+      write32(targetSampleRate * blockAlign); write16(blockAlign); write16(bytesPerSample*8);
+      writeStr('data'); write32(resampled.length * bytesPerSample);
+      // PCM samples
+      for (let i=0;i<resampled.length;i++){
+        let s = Math.max(-1, Math.min(1, resampled[i]));
+        view.setInt16(p, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+        p += 2;
+      }
+      return new Blob([view], { type: 'audio/wav' });
+    }
 
     async function listAudioDevices(){
       try {
