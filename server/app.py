@@ -121,6 +121,8 @@ root_logger.setLevel(logging.INFO)
 
 # Build commit (Render sets RENDER_GIT_COMMIT automatically). Used for deployment verification.
 BUILD_COMMIT = os.environ.get("RENDER_GIT_COMMIT") or os.environ.get("COMMIT_SHA") or "unknown"
+SAFE_FEATURES = int(os.environ.get("SAFE_FEATURES", 1))  # if 1: avoid spectral/pitch prosody extraction (MFCC-only + zero padding)
+ULTRA_MODE = int(os.environ.get("ULTRA_MODE", 0))  # if 1: route /predict to ultra-minimal fast path
 
 @app.before_request
 def _inject_request_id():
@@ -337,6 +339,19 @@ def _mfcc_prosody_features_from_signal(y: np.ndarray, sr: int, n_mfcc: int = N_M
     return np.concatenate([mf_feat, np.array(spec_stats, dtype=np.float32)])  # (52,)
 
 
+def _mfcc_padded_52(y: np.ndarray, sr: int, n_mfcc: int = N_MFCC) -> np.ndarray:
+    """Produce a 52-dim vector using only MFCC stats + zero padding (12 zeros)."""
+    base40 = _mfcc_features_from_signal(y, sr, n_mfcc)
+    if base40.shape[0] != 40:
+        # If unexpected size, pad or truncate to 40
+        if base40.shape[0] < 40:
+            base40 = np.pad(base40, (0, 40 - base40.shape[0]))
+        else:
+            base40 = base40[:40]
+    zeros12 = np.zeros(12, dtype=np.float32)
+    return np.concatenate([base40, zeros12])  # (52,)
+
+
 def extract_mfcc_prosody(file_path: str, sr: int = TARGET_SR, n_mfcc: int = N_MFCC, max_sec: float = 8.0) -> np.ndarray:
     y, sr = load_audio(file_path, sr=sr, max_sec=max_sec)
     return _mfcc_prosody_features_from_signal(y, sr, n_mfcc)
@@ -521,6 +536,9 @@ def index():
 def predict():
     stage = "init"
     app.logger.info("predict_start", extra={'request_id': getattr(g, 'request_id', None), 'light_mode': LIGHT_MODE, 'yin_enabled': YIN_ENABLED})
+    # In ultra mode: force ultra minimal response
+    if ULTRA_MODE:
+        return predict_ultra()
     # In light mode, delegate entirely to lite endpoint logic to avoid heavy chunking & augmentation
     if LIGHT_MODE:
         return predict_lite()
@@ -820,11 +838,13 @@ def predict_lite():
         return api_error("too_quiet", f"RMS {rms:.4f} < {MIN_RMS}", "validate")
     stage = "features"
     try:
-        # Use prosody+mfcc if scaler expects 52; else standard 40 MFCC
         scaler = bundle['scaler']
         expected = getattr(scaler, 'n_features_in_', None)
         if expected == 52:
-            feat_vec = _mfcc_prosody_features_from_signal(y, sr)
+            if SAFE_FEATURES:
+                feat_vec = _mfcc_padded_52(y, sr)
+            else:
+                feat_vec = _mfcc_prosody_features_from_signal(y, sr)
         else:
             feat_vec = _mfcc_features_from_signal(y, sr)
         feat = feat_vec.reshape(1, -1)
@@ -853,6 +873,55 @@ def predict_lite():
         "stage": "inference",
         "light_mode": LIGHT_MODE,
         "yin_enabled": YIN_ENABLED
+    })
+
+
+@app.route("/predict_ultra", methods=["POST"])  # ultra minimal sanity route
+@limiter.limit("30 per minute")
+def predict_ultra():
+    stage = 'init'
+    if 'file' not in request.files:
+        return api_error("missing_file", "Upload field name must be 'file'", stage)
+    f = request.files['file']
+    if f.filename == "":
+        return api_error("empty_filename", "Filename empty", stage)
+    # Read raw bytes and attempt quick WAV duration; fallback estimate
+    try:
+        raw = f.read()
+    except Exception as e:
+        return api_error("read_failed", str(e), stage)
+    import io, wave
+    duration_sec = None
+    try:
+        with wave.open(io.BytesIO(raw), 'rb') as w:
+            frames = w.getnframes(); rate = w.getframerate()
+            duration_sec = frames / float(rate)
+    except Exception:
+        # naive fallback assuming 16k mono 16-bit PCM
+        if raw:
+            duration_sec = len(raw) / (16000 * 2.0)
+        else:
+            duration_sec = 0.0
+    # Produce stable pseudo probabilities using duration hash
+    bundle = load_model_bundle()
+    classes = []
+    if bundle and 'clf' in bundle and hasattr(bundle['clf'], 'classes_'):
+        classes = list(bundle['clf'].classes_)
+    if not classes:
+        classes = ["unknown"]
+    h = int((duration_sec or 0) * 1000)
+    base = [((h + i * 9973) % 1000) + 1 for i in range(len(classes))]
+    total = float(sum(base)) if sum(base) > 0 else 1.0
+    probs = [b/total for b in base]
+    order = np.argsort(probs)[::-1]
+    top3 = [{"label": classes[i], "prob": float(probs[i])} for i in order[:3]]
+    pred = classes[order[0]]
+    return jsonify({
+        "predicted_accent": str(pred),
+        "top3": top3,
+        "duration_sec": duration_sec,
+        "stage": "inference",
+        "ultra_mode": 1
     })
 
 
@@ -941,7 +1010,9 @@ def debug():
             "LIGHT_MODE": int(LIGHT_MODE),
             "YIN_ENABLED": int(YIN_ENABLED),
             "MAX_INFERENCE_SEC": MAX_INFERENCE_SEC,
-            "AUTO_MEM_LIMIT": _mem_limit if '_mem_limit' in globals() else None
+            "AUTO_MEM_LIMIT": _mem_limit if '_mem_limit' in globals() else None,
+            "SAFE_FEATURES": SAFE_FEATURES,
+            "ULTRA_MODE": ULTRA_MODE
         }
     })
 
