@@ -1,9 +1,11 @@
 import os
+import sys
 import tempfile
 import pathlib
 import uuid
 import time
 import logging
+from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 
 import numpy as np
@@ -59,6 +61,11 @@ DEBUG_LOG = int(os.environ.get("DEBUG_FEATURE_LOG", 1))  # if 1: write debug fea
 DEBUG_DIR = BASE_DIR / "results" / "debug_features"
 DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 
+# Memory / light-mode flags (to survive low-RAM free tiers)
+LIGHT_MODE = int(os.environ.get("LIGHT_MODE", 0))  # if 1: disable costly augmentations & trims
+YIN_ENABLED = int(os.environ.get("YIN_ENABLED", 1))  # if 0: skip f0 extraction (librosa.yin)
+MAX_INFERENCE_SEC = float(os.environ.get("MAX_INFERENCE_SEC", 6.0))  # hard cap on processed audio length
+
 # Input validation thresholds
 MIN_DURATION_SEC = float(os.environ.get("MIN_DURATION_SEC", 1.5))  # minimum usable duration after trimming
 MIN_RMS = float(os.environ.get("MIN_RMS", 0.004))  # minimum RMS energy threshold (post-normalization)
@@ -108,9 +115,19 @@ def _handle_unhandled_exception(e):
     """Return JSON for any uncaught exception so frontend gets a structured error."""
     # Preserve HTTPExceptions' status/code
     if isinstance(e, HTTPException):
-        return jsonify({"error": e.name or "http_error", "detail": getattr(e, 'description', str(e))}), e.code
+        return jsonify({"error": e.name or "http_error", "detail": getattr(e, 'description', str(e)), "stage": "unhandled"}), e.code
     app.logger.exception("Unhandled exception")
-    return jsonify({"error": "internal_server_error", "detail": str(e)}), 500
+    return jsonify({"error": "internal_server_error", "detail": str(e), "stage": "unhandled"}), 500
+
+
+def api_error(error: str, detail: str = "", stage: str = "", code: int = 400):
+    """Consistent JSON error helper."""
+    payload = {"error": error}
+    if detail:
+        payload["detail"] = detail
+    if stage:
+        payload["stage"] = stage
+    return jsonify(payload), code
 
 
 # -------- Audio + Features ---------
@@ -131,22 +148,24 @@ def _normalize_rms(y: np.ndarray, target_dbfs: float = -20.0) -> np.ndarray:
 
 
 def load_audio(file_path: str, sr: int = TARGET_SR, max_sec: float = 8.0) -> Tuple[np.ndarray, int]:
-    """Load audio mono, trim silence, normalize loudness, resample, cap length (cross-platform)."""
+    """Load audio mono, optional trim, normalize loudness, resample, cap length.
+
+    In LIGHT_MODE: skip expensive trim/split to reduce CPU & memory spikes.
+    """
     y, orig_sr = librosa.load(file_path, sr=None, mono=True)
-    # trim leading/trailing silence
-    try:
-        y, _ = librosa.effects.trim(y, top_db=30)
-    except Exception:
-        pass
-    # optional voice-activity-like splitting (keep voiced segments)
-    try:
-        intervals = librosa.effects.split(y, top_db=35)
-        if len(intervals) > 0:
-            parts = [y[s:e] for s, e in intervals]
-            y = np.concatenate(parts) if len(parts) > 0 else y
-    except Exception:
-        pass
-    # normalize RMS
+    if not LIGHT_MODE:
+        try:
+            y, _ = librosa.effects.trim(y, top_db=30)
+        except Exception:
+            pass
+        try:
+            intervals = librosa.effects.split(y, top_db=35)
+            if len(intervals) > 0:
+                parts = [y[s:e] for s, e in intervals]
+                y = np.concatenate(parts) if len(parts) > 0 else y
+        except Exception:
+            pass
+    # normalize RMS (cheap)
     y = _normalize_rms(y, -20.0)
     # cap to max length at original SR first
     if max_sec is not None and orig_sr and len(y) > int(max_sec * orig_sr):
@@ -197,17 +216,20 @@ def _mfcc_prosody_features_from_signal(y: np.ndarray, sr: int, n_mfcc: int = N_M
     roll = librosa.feature.spectral_rolloff(y=y, sr=sr)
     bw = librosa.feature.spectral_bandwidth(y=y, sr=sr)
 
-    # f0 via YIN (robust to NaNs)
-    try:
-        f0 = librosa.yin(y, fmin=50, fmax=500, sr=sr)
-        f0 = f0[np.isfinite(f0)]
-        if f0.size == 0:
+    # f0 via YIN (skip if disabled for memory/CPU reasons)
+    if YIN_ENABLED:
+        try:
+            f0 = librosa.yin(y, fmin=50, fmax=500, sr=sr)
+            f0 = f0[np.isfinite(f0)]
+            if f0.size == 0:
+                f0_med = f0_mean = f0_std = 0.0
+            else:
+                f0_med = float(np.median(f0))
+                f0_mean = float(np.mean(f0))
+                f0_std = float(np.std(f0))
+        except Exception:
             f0_med = f0_mean = f0_std = 0.0
-        else:
-            f0_med = float(np.median(f0))
-            f0_mean = float(np.mean(f0))
-            f0_std = float(np.std(f0))
-    except Exception:
+    else:
         f0_med = f0_mean = f0_std = 0.0
 
     spec_stats = [
@@ -233,6 +255,9 @@ def _generate_tta_variants(y: np.ndarray, sr: int) -> List[np.ndarray]:
     Augmentations kept subtle to preserve accent cues while reducing device/noise shift.
     Order: pitch shifts, time stretch, small noise, slight gain perturbations.
     """
+    # Skip entirely in LIGHT_MODE or if TTA disabled
+    if LIGHT_MODE or not TTA_ENABLED:
+        return []
     variants: List[np.ndarray] = []
     if y.size == 0:
         return variants
@@ -245,10 +270,9 @@ def _generate_tta_variants(y: np.ndarray, sr: int) -> List[np.ndarray]:
         except Exception:
             pass
 
-    # Pitch shifts +/- 1 semitone
+    # Lightweight augmentations only (omit pitch/time stretch in low memory mode handled above)
     safe(lambda: librosa.effects.pitch_shift(y, sr=sr, n_steps=1))
     safe(lambda: librosa.effects.pitch_shift(y, sr=sr, n_steps=-1))
-    # Time stretch slight
     safe(lambda: librosa.effects.time_stretch(y, rate=0.97))
     safe(lambda: librosa.effects.time_stretch(y, rate=1.03))
     # Add low-level noise
@@ -402,16 +426,35 @@ def index():
 @app.route("/predict", methods=["POST"])  # multipart/form-data with 'file'
 @limiter.limit("10 per minute")
 def predict():
+    stage = "init"
     bundle = load_model_bundle()
     if bundle is None:
-        return jsonify({"error": "model_not_loaded", "detail": f"Expected at {MODEL_PATH}"}), 503
+        return api_error("model_not_loaded", f"Expected at {MODEL_PATH}", stage, 503)
 
     if "file" not in request.files:
-        return jsonify({"error": "missing_file", "detail": "Upload field name must be 'file'"}), 400
+        return api_error("missing_file", "Upload field name must be 'file'", stage)
 
     f = request.files["file"]
     if f.filename == "":
-        return jsonify({"error": "empty_filename"}), 400
+        return api_error("empty_filename", "Filename empty", stage)
+
+    stage = "upload"  # after basic file field validation
+    # Attempt to read stream size (may not always work depending on storage adapter)
+    size_bytes = None
+    try:
+        pos = f.stream.tell()
+        f.stream.seek(0, os.SEEK_END)
+        size_bytes = f.stream.tell()
+        f.stream.seek(pos, os.SEEK_SET)
+    except Exception:
+        pass
+    mime_type = getattr(f, 'mimetype', None)
+    app.logger.info("incoming_file", extra={
+        'request_id': getattr(g, 'request_id', None),
+        'upload_filename': f.filename,
+        'mime': mime_type,
+        'size_bytes': size_bytes
+    })
 
     # Persist to a temp file to ensure librosa can open it reliably
     suffix = os.path.splitext(f.filename)[1] or ".wav"
@@ -419,18 +462,29 @@ def predict():
         f.save(tmp.name)
         # Load once and run chunked feature extraction for improved sensitivity
         try:
-            y, sr = load_audio(tmp.name, sr=TARGET_SR, max_sec=8.0)
+            y, sr = load_audio(tmp.name, sr=TARGET_SR, max_sec=min(MAX_INFERENCE_SEC, 8.0))
         except Exception as e:
+            stage = "decode"
             app.logger.exception("Audio load failed: %s", e)
-            return jsonify({"error": "audio_load_failed", "detail": str(e)}), 400
+            return api_error("audio_load_failed", str(e), stage)
 
         # Input validation: duration & energy
         duration = len(y) / float(sr) if sr else 0.0
         rms = float(np.sqrt(np.mean(y ** 2) + 1e-9))
         if duration < MIN_DURATION_SEC:
-            return jsonify({"error": "too_short", "detail": f"Duration {duration:.2f}s < {MIN_DURATION_SEC}s"}), 400
+            stage = "validate"
+            return api_error("too_short", f"Duration {duration:.2f}s < {MIN_DURATION_SEC}s", stage)
         if rms < MIN_RMS:
-            return jsonify({"error": "too_quiet", "detail": f"RMS {rms:.4f} < {MIN_RMS}"}), 400
+            stage = "validate"
+            return api_error("too_quiet", f"RMS {rms:.4f} < {MIN_RMS}", stage)
+        app.logger.info("decoded_audio", extra={
+            'request_id': getattr(g, 'request_id', None),
+            'duration_sec': round(duration, 4),
+            'rms': round(rms, 6),
+            'sr': sr,
+            'min_duration_sec': MIN_DURATION_SEC,
+            'min_rms': MIN_RMS
+        })
 
         # Full-sample features
         full_52 = None
@@ -443,8 +497,9 @@ def predict():
             full_40 = _mfcc_features_from_signal(y, sr)
         except Exception as e:
             if full_52 is None:
+                stage = "features"
                 app.logger.exception("Full MFCC failed and no 52-dim fallback: %s", e)
-                return jsonify({"error": "feature_extraction_failed", "detail": str(e)}), 400
+                return api_error("feature_extraction_failed", str(e), stage)
 
         # Chunked features
         feats_52_list = []
@@ -539,8 +594,9 @@ def predict():
             else:
                 raise e
         except Exception as e2:
+            stage = "scale"
             app.logger.exception("Scaler transform failed for available features: %s / %s", e, e2)
-            return jsonify({"error": "scaler_transform_failed", "detail": str(e2)}), 500
+            return api_error("scaler_transform_failed", str(e2), stage, 500)
 
     # Base probabilities (chunk averaging if multiple rows)
     def _predict_proba(matrix: np.ndarray) -> np.ndarray:
@@ -612,6 +668,10 @@ def predict():
         "temperature_used": CALIB_TEMPERATURE,
         "duration_sec": duration,
         "rms_energy": rms,
+        "feature_rows": int(use_matrix.shape[0]) if use_matrix is not None else None,
+        "feature_dim": int(use_matrix.shape[1]) if use_matrix is not None else None,
+        "expected_dim": expected,
+        "stage": "inference"
     }
 
     # Debug logging of feature/probabilities if enabled or if prediction uncertain
@@ -637,11 +697,22 @@ def predict():
 @app.route("/health", methods=["GET"])
 def health():
     """Simple health/status endpoint to verify server readiness."""
-    bundle_loaded = os.path.isfile(MODEL_PATH)
+    bundle = load_model_bundle()
+    present = os.path.isfile(MODEL_PATH)
+    feature_dim = None
+    if bundle and 'scaler' in bundle:
+        feature_dim = getattr(bundle['scaler'], 'n_features_in_', None)
     return jsonify({
         "status": "ok",
+        "timestamp": datetime.utcnow().isoformat() + "Z",
         "model_path": MODEL_PATH,
-        "model_present": bundle_loaded
+        "model_present": present,
+        "model_loaded": bool(bundle),
+        "feature_dim": feature_dim,
+        "min_duration_sec": MIN_DURATION_SEC,
+        "chunk_sec": CHUNK_SEC,
+        "chunk_hop": CHUNK_HOP,
+        "min_chunks": MIN_CHUNKS
     })
 
 @app.route("/version", methods=["GET"])
@@ -668,6 +739,40 @@ def version():
         'chunk_hop': CHUNK_HOP,
         'min_chunks': MIN_CHUNKS,
         'temperature': CALIB_TEMPERATURE
+    })
+
+
+@app.route("/debug", methods=["GET"])
+def debug():
+    """Detailed diagnostics for deployment troubleshooting (avoid exposing secrets)."""
+    bundle = load_model_bundle()
+    env_whitelist = [
+        "MFCC_MODEL_PATH", "CHUNK_SEC", "CHUNK_HOP", "MIN_CHUNKS", "MIN_DURATION_SEC", "MIN_RMS",
+        "TTA_ENABLED", "TTA_MAX_VARIANTS", "TTA_PROB_THRESH", "CALIB_TEMPERATURE"
+    ]
+    env_info = {k: os.environ.get(k) for k in env_whitelist if k in os.environ}
+    model_exists = os.path.isfile(MODEL_PATH)
+    model_size = None
+    try:
+        if model_exists:
+            model_size = os.path.getsize(MODEL_PATH)
+    except Exception:
+        pass
+    py_version = sys.version
+    limiter_info = {
+        "default_limits": getattr(limiter, 'default_limits', None)
+    }
+    return jsonify({
+        "status": "ok",
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "cwd": os.getcwd(),
+        "python_version": py_version,
+        "env": env_info,
+        "model_path": MODEL_PATH,
+        "model_exists": model_exists,
+        "model_size_bytes": model_size,
+        "model_loaded": bool(bundle),
+        "limiter": limiter_info
     })
 
 
