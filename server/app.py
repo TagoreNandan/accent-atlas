@@ -119,6 +119,9 @@ if not root_logger.handlers:
     root_logger.addHandler(handler)
 root_logger.setLevel(logging.INFO)
 
+# Build commit (Render sets RENDER_GIT_COMMIT automatically). Used for deployment verification.
+BUILD_COMMIT = os.environ.get("RENDER_GIT_COMMIT") or os.environ.get("COMMIT_SHA") or "unknown"
+
 @app.before_request
 def _inject_request_id():
     g.request_id = uuid.uuid4().hex
@@ -864,6 +867,7 @@ def health():
     return jsonify({
         "status": "ok",
         "timestamp": datetime.utcnow().isoformat() + "Z",
+        "build_commit": BUILD_COMMIT,
         "model_path": MODEL_PATH,
         "model_present": present,
         "model_loaded": bool(bundle),
@@ -924,6 +928,7 @@ def debug():
     return jsonify({
         "status": "ok",
         "timestamp": datetime.utcnow().isoformat() + "Z",
+        "build_commit": BUILD_COMMIT,
         "cwd": os.getcwd(),
         "python_version": py_version,
         "env": env_info,
