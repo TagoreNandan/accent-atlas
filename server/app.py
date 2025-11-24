@@ -182,7 +182,67 @@ def load_audio(file_path: str, sr: int = TARGET_SR, max_sec: float = 8.0) -> Tup
 
     In LIGHT_MODE: skip expensive trim/split to reduce CPU & memory spikes.
     """
-    y, orig_sr = librosa.load(file_path, sr=None, mono=True)
+    try:
+        y, orig_sr = librosa.load(file_path, sr=None, mono=True)
+    except Exception as e_librosa:
+        # Fallback chain: soundfile -> scipy.io.wavfile -> wave (WAV only)
+        y = None
+        orig_sr = None
+        # Try soundfile
+        try:
+            import soundfile as sf
+            data, sr_sf = sf.read(file_path)
+            if data.ndim > 1:
+                data = data.mean(axis=1)
+            y = data.astype(np.float32)
+            orig_sr = sr_sf
+        except Exception:
+            pass
+        # Try scipy
+        if y is None:
+            try:
+                from scipy.io import wavfile
+                sr_sp, data_sp = wavfile.read(file_path)
+                if data_sp.ndim > 1:
+                    data_sp = data_sp.mean(axis=1)
+                # Normalize int formats to float
+                if data_sp.dtype == np.int16:
+                    data_sp = data_sp.astype(np.float32) / 32768.0
+                elif data_sp.dtype == np.int32:
+                    data_sp = data_sp.astype(np.float32) / 2147483648.0
+                y = data_sp.astype(np.float32)
+                orig_sr = sr_sp
+            except Exception:
+                pass
+        # Try wave (last resort, PCM only)
+        if y is None:
+            try:
+                import wave, struct
+                with wave.open(file_path, 'rb') as wf:
+                    sr_w = wf.getframerate()
+                    n_frames = wf.getnframes()
+                    nch = wf.getnchannels()
+                    raw = wf.readframes(n_frames)
+                    sampwidth = wf.getsampwidth()
+                    fmt_map = {1: 'B', 2: 'h', 4: 'i'}
+                    fmt = fmt_map.get(sampwidth)
+                    if fmt:
+                        unpack_fmt = f'<{n_frames * nch}{fmt}'
+                        ints = struct.unpack(unpack_fmt, raw)
+                        arr = np.array(ints, dtype=np.float32)
+                        if nch > 1:
+                            arr = arr.reshape(-1, nch).mean(axis=1)
+                        # scale if signed
+                        if sampwidth == 2:
+                            arr /= 32768.0
+                        elif sampwidth == 4:
+                            arr /= 2147483648.0
+                        y = arr
+                        orig_sr = sr_w
+            except Exception:
+                pass
+        if y is None or orig_sr is None:
+            raise RuntimeError(f"librosa.load failed and fallback decoders unavailable: {str(e_librosa)}")
     if not LIGHT_MODE:
         try:
             y, _ = librosa.effects.trim(y, top_db=30)
@@ -871,7 +931,13 @@ def debug():
         "model_exists": model_exists,
         "model_size_bytes": model_size,
         "model_loaded": bool(bundle),
-        "limiter": limiter_info
+        "limiter": limiter_info,
+        "derived": {
+            "LIGHT_MODE": int(LIGHT_MODE),
+            "YIN_ENABLED": int(YIN_ENABLED),
+            "MAX_INFERENCE_SEC": MAX_INFERENCE_SEC,
+            "AUTO_MEM_LIMIT": _mem_limit if '_mem_limit' in globals() else None
+        }
     })
 
 
