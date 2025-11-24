@@ -248,11 +248,17 @@
       sendBtn.disabled = true; chooseBtn.disabled = true;
       try {
         const res = await fetch('/predict', { method: 'POST', body: fd });
-        if (!res.ok) { const txt = await res.text(); throw new Error(`HTTP ${res.status} ${res.statusText}: ${txt}`); }
-        const j = await res.json();
+        const text = await res.text();
+        let j = null;
+        try { j = JSON.parse(text); } catch(e) { j = null; }
+        if (!res.ok) {
+          const msg = (j && (j.error || j.detail)) ? (j.error + ': ' + (j.detail || '')) : text || res.statusText;
+          hideLoading(); statusMsg.textContent = 'Upload failed: ' + msg; toast('Upload failed: ' + (j?.error || res.status));
+          return;
+        }
         hideLoading(); renderResult(j); toast('Prediction ready ✅');
       } catch (e) {
-        hideLoading(); statusMsg.textContent = 'Upload failed.'; toast('Upload failed.');
+        hideLoading(); statusMsg.textContent = 'Upload failed: ' + (e.message || e); toast('Upload failed.');
       }
       sendBtn.disabled = false; chooseBtn.disabled = false;
     };
@@ -306,8 +312,19 @@
       const wavBlob = encodeWAV(merged, recSampleRate); const url = URL.createObjectURL(wavBlob); player.src = url; statusEl.textContent = 'Ready to upload.'; toast('Recording ready to upload');
       uploadRecBtn.onclick = async ()=>{
         const fd = new FormData(); fd.append('file', wavBlob, 'recording.wav'); statusMsg.textContent = 'Uploading recording...'; showLoading(); uploadRecBtn.disabled = true;
-        try{ const res = await fetch('/predict', { method: 'POST', body: fd }); if (!res.ok){ const txt = await res.text(); throw new Error(`HTTP ${res.status} ${res.statusText}: ${txt}`); } const j = await res.json(); hideLoading(); renderResult(j); toast('Prediction ready ✅'); }
-        catch(e){ hideLoading(); statusMsg.textContent = 'Upload failed.'; toast('Upload failed.'); }
+        try{
+          const res = await fetch('/predict', { method: 'POST', body: fd });
+          const text = await res.text();
+          let j = null; try { j = JSON.parse(text); } catch(e) { j = null; }
+          if (!res.ok) {
+            const msg = (j && (j.error || j.detail)) ? (j.error + ': ' + (j.detail || '')) : text || res.statusText;
+            hideLoading(); statusMsg.textContent = 'Upload failed: ' + msg; toast('Upload failed: ' + (j?.error || res.status));
+            uploadRecBtn.disabled = false;
+            return;
+          }
+          hideLoading(); renderResult(j); toast('Prediction ready ✅');
+        }
+        catch(e){ hideLoading(); statusMsg.textContent = 'Upload failed: ' + (e.message || e); toast('Upload failed.'); }
         uploadRecBtn.disabled = false;
       };
       if (mediaStream) mediaStream.getTracks().forEach(t=>t.stop()); if (processorNode) processorNode.disconnect(); if (sourceNode) sourceNode.disconnect(); if (audioCtx && audioCtx.state !== 'closed') audioCtx.close();
