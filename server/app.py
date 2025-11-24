@@ -62,8 +62,38 @@ DEBUG_DIR = BASE_DIR / "results" / "debug_features"
 DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 
 # Memory / light-mode flags (to survive low-RAM free tiers)
-LIGHT_MODE = int(os.environ.get("LIGHT_MODE", 0))  # if 1: disable costly augmentations & trims
-YIN_ENABLED = int(os.environ.get("YIN_ENABLED", 1))  # if 0: skip f0 extraction (librosa.yin)
+def _read_memory_limit_bytes() -> Optional[int]:
+    # cgroup v2 memory.limit may reside at /sys/fs/cgroup/memory.max or memory.limit_in_bytes for v1
+    candidates = [
+        pathlib.Path('/sys/fs/cgroup/memory.max'),
+        pathlib.Path('/sys/fs/cgroup/memory.limit_in_bytes'),
+    ]
+    for c in candidates:
+        try:
+            if c.is_file():
+                txt = c.read_text().strip()
+                if txt and txt.isdigit():
+                    v = int(txt)
+                    # Filter out 'max' string and unrealistic huge value
+                    if v > 0 and v < 1 << 50:
+                        return v
+        except Exception:
+            pass
+    return None
+
+_mem_limit = _read_memory_limit_bytes()
+
+_env_light = os.environ.get("LIGHT_MODE")
+if _env_light is not None:
+    LIGHT_MODE = int(_env_light)
+else:
+    # Auto-enable light mode if memory limit < 700MB or unknown (conservative for free tiers)
+    if _mem_limit is not None and _mem_limit < 700 * 1024 * 1024:
+        LIGHT_MODE = 1
+    else:
+        LIGHT_MODE = 1  # default to safe mode for remote reliability
+
+YIN_ENABLED = int(os.environ.get("YIN_ENABLED", 0 if LIGHT_MODE else 1))  # disable YIN when LIGHT_MODE
 MAX_INFERENCE_SEC = float(os.environ.get("MAX_INFERENCE_SEC", 6.0))  # hard cap on processed audio length
 
 # Input validation thresholds
@@ -427,6 +457,10 @@ def index():
 @limiter.limit("10 per minute")
 def predict():
     stage = "init"
+    app.logger.info("predict_start", extra={'request_id': getattr(g, 'request_id', None), 'light_mode': LIGHT_MODE, 'yin_enabled': YIN_ENABLED})
+    # In light mode, delegate entirely to lite endpoint logic to avoid heavy chunking & augmentation
+    if LIGHT_MODE:
+        return predict_lite()
     bundle = load_model_bundle()
     if bundle is None:
         return api_error("model_not_loaded", f"Expected at {MODEL_PATH}", stage, 503)
@@ -692,6 +726,71 @@ def predict():
         except Exception:
             pass
     return jsonify(response)
+
+
+@app.route("/predict_lite", methods=["POST"])  # minimal MFCC-only quick sanity route
+@limiter.limit("20 per minute")
+def predict_lite():
+    stage = "init"
+    app.logger.info("predict_lite_start", extra={'request_id': getattr(g, 'request_id', None)})
+    bundle = load_model_bundle()
+    if bundle is None:
+        return api_error("model_not_loaded", f"Expected at {MODEL_PATH}", stage, 503)
+    if "file" not in request.files:
+        return api_error("missing_file", "Upload field name must be 'file'", stage)
+    f = request.files['file']
+    if f.filename == "":
+        return api_error("empty_filename", "Filename empty", stage)
+    suffix = os.path.splitext(f.filename)[1] or '.wav'
+    stage = "decode"
+    try:
+        with tempfile.NamedTemporaryFile(delete=True, suffix=suffix, dir=UPLOAD_DIR) as tmp:
+            f.save(tmp.name)
+            y, sr = load_audio(tmp.name, sr=TARGET_SR, max_sec=min(MAX_INFERENCE_SEC, 6.0))
+    except Exception as e:
+        return api_error("audio_load_failed", str(e), stage)
+    duration = len(y) / float(sr) if sr else 0.0
+    if duration < MIN_DURATION_SEC:
+        return api_error("too_short", f"Duration {duration:.2f}s < {MIN_DURATION_SEC}s", "validate")
+    rms = float(np.sqrt(np.mean(y ** 2) + 1e-9))
+    if rms < MIN_RMS:
+        return api_error("too_quiet", f"RMS {rms:.4f} < {MIN_RMS}", "validate")
+    stage = "features"
+    try:
+        # Use prosody+mfcc if scaler expects 52; else standard 40 MFCC
+        scaler = bundle['scaler']
+        expected = getattr(scaler, 'n_features_in_', None)
+        if expected == 52:
+            feat_vec = _mfcc_prosody_features_from_signal(y, sr)
+        else:
+            feat_vec = _mfcc_features_from_signal(y, sr)
+        feat = feat_vec.reshape(1, -1)
+    except Exception as e:
+        return api_error("feature_extraction_failed", str(e), stage)
+    scaler = bundle['scaler']; clf = bundle['clf']
+    try:
+        X = scaler.transform(feat)
+    except Exception as e:
+        return api_error("scaler_transform_failed", str(e), "scale", 500)
+    try:
+        proba = clf.predict_proba(X)[0]
+        classes = clf.classes_.tolist()
+    except Exception as e:
+        return api_error("predict_failed", str(e), "inference", 500)
+    idx = int(np.argmax(proba))
+    pred = classes[idx]
+    order = np.argsort(proba)[::-1]
+    top3 = [{"label": classes[i], "prob": float(proba[i])} for i in order[:3]]
+    return jsonify({
+        "predicted_accent": str(pred),
+        "top3": top3,
+        "duration_sec": duration,
+        "rms_energy": rms,
+        "feature_dim": int(feat.shape[1]),
+        "stage": "inference",
+        "light_mode": LIGHT_MODE,
+        "yin_enabled": YIN_ENABLED
+    })
 
 
 @app.route("/health", methods=["GET"])
