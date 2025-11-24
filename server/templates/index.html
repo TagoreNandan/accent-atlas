@@ -311,6 +311,7 @@
       }catch(e){ statusEl.textContent = 'Mic access denied'; toast('Microphone access denied'); }
     }
 
+    const MIN_RECORD_SEC = 1.5; // must match server MIN_DURATION_SEC
     function stopRecording(){
       if (!recording) return; recording = false;
       stopBtn.disabled = true; recordBtn.disabled = false; uploadRecBtn.disabled = false;
@@ -319,7 +320,15 @@
       function floatTo16BitPCM(float32){ const out = new DataView(new ArrayBuffer(float32.length * 2)); let o = 0; for (let i=0;i<float32.length;i++,o+=2){ let s = Math.max(-1, Math.min(1, float32[i])); s = s < 0 ? s * 0x8000 : s * 0x7FFF; out.setInt16(o, s, true);} return out; }
       function encodeWAV(samples, sampleRate){ const bytesPerSample = 2, blockAlign = bytesPerSample; const buffer = new ArrayBuffer(44 + samples.length * bytesPerSample); const view = new DataView(buffer); const writeString=(v,o,s)=>{ for(let i=0;i<s.length;i++) v.setUint8(o+i, s.charCodeAt(i)); };
         let o=0; writeString(view,o,'RIFF'); o+=4; view.setUint32(o, 36 + samples.length * bytesPerSample, true); o+=4; writeString(view,o,'WAVE'); o+=4; writeString(view,o,'fmt '); o+=4; view.setUint32(o,16,true); o+=4; view.setUint16(o,1,true); o+=2; view.setUint16(o,1,true); o+=2; view.setUint32(o,sampleRate,true); o+=4; view.setUint32(o,sampleRate*blockAlign,true); o+=4; view.setUint16(o,blockAlign,true); o+=2; view.setUint16(o,bytesPerSample*8,true); o+=2; writeString(view,o,'data'); o+=4; view.setUint32(o, samples.length * bytesPerSample, true); o+=4; const pcm=floatTo16BitPCM(merged); for(let i=0;i<pcm.byteLength;i++){ view.setUint8(44+i, pcm.getUint8(i)); } return new Blob([view], { type: 'audio/wav' }); }
-      const wavBlob = encodeWAV(merged, recSampleRate); const url = URL.createObjectURL(wavBlob); player.src = url; statusEl.textContent = 'Ready to upload.'; toast('Recording ready to upload');
+      const wavBlob = encodeWAV(merged, recSampleRate); const url = URL.createObjectURL(wavBlob); player.src = url;
+      const durationSec = merged.length / recSampleRate;
+      if (durationSec < MIN_RECORD_SEC){
+        statusEl.textContent = `Recording too short (${durationSec.toFixed(2)}s). Minimum ${MIN_RECORD_SEC}s.`;
+        toast('Recording too short — hold to record longer');
+        uploadRecBtn.disabled = true;
+        return;
+      }
+      statusEl.textContent = 'Ready to upload.'; toast('Recording ready to upload');
       uploadRecBtn.onclick = async ()=>{
         const fd = new FormData(); fd.append('file', wavBlob, 'recording.wav'); statusMsg.textContent = 'Uploading recording...'; showLoading(); uploadRecBtn.disabled = true;
         try{
